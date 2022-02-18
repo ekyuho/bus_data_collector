@@ -921,7 +921,7 @@ public:
 		//Serial.printf("\n decompose: %s %s%s %s %s", host, sport, sport, path, param.c_str());
 	}
 	void refresh() {
-		url = String("http://"+String(host)+":"+sport+path+param;
+		url = String("http://")+host+":"+sport+path+param;
 	}
 } myurl;
 
