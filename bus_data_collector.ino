@@ -1,11 +1,11 @@
-#define VERSION "V2.1"
+#define VERSION "V2.251"
 #define BANNER "Bus Monitor  Kyuho_Kim"
 //#define __FILENAME__ (strrchr(__FILE__, '\\') ? strrchr(__FILE__, '\\') + 1 : __FILE__)
 
 #define REBOOT reboot(180);
 void reboot(int);
 
-#define DEFAULT1 "{\"user\":1000,\"gps\":0,\"topic\":\"s2m\",\"device\":\"bus\",\"target\":\"busan\",\"ssid\":\"cookie2\",\"password\":\"0317137263\",\"secure\":\"no\",\"eap_login\":\"wifi\",\"eap_password\":\"wifi\",\"mqttserver\":\"damoa.io\"}"
+#define DEFAULT1 "{\"user\":1000,\"gps\":0,\"topic\":\"s2m\",\"device\":\"bus\",\"target\":\"busan\",\"ssid\":\"\",\"password\":\"\",\"secure\":\"no\",\"eap_login\":\"wifi\",\"eap_password\":\"wifi\",\"mqttserver\":\"damoa.io\"}"
 
 /*
 {"user":100005,"topic":"s2m","device":"bus","gps":0,"ssid":"","password":"","target":"seoul","secure":"no","eap_login":"wifi","eap_password":"wifi","mqttserver":"damoa.io"}
@@ -13,8 +13,9 @@ void reboot(int);
 																				seoul,busan.raspAP
 																									secure,insecure
 */
-//#define SHT1X   if not, BME680 or DHT21
-//#define OLED
+//#define SHT1X 
+//#define OLED   // use twowire for oled or sensor
+                 // should modify screen.h too
 //#define GYRO  auto config
 //#define DS18B20
 
@@ -36,9 +37,15 @@ PubSubClient mqttClient(espClient);
 const char* mqttUser = NULL;
 const char* mqttPassword = NULL;
 
+#ifdef USE_BLUETOOTH
+#include "BluetoothSerial.h"
+BluetoothSerial SerialBT;
+#endif
 
 #include "screen.h"
 Screen myscreen;
+
+char tbuf[4096], tb1[1024], tb2[1024], tb3[1024];
 
 #include <QuickStats.h>
 QuickStats stats;
@@ -80,22 +87,58 @@ public:
 	}
 } myled;
 
+
+#include <TinyGPSPlus.h>
+TinyGPSPlus gps;
+class GPS {
+public:
+	void begin(void) {
+		//const int gps_tx = 16;  //ESP32 16
+		//const int gps_rx = 17;  //ESP32 17
+	}
+	void print(int cnt) {
+		if (gps.charsProcessed() < 10) {
+			Serial.printf("\n GPS is not responding..");
+			return;
+		}
+		
+		Serial.printf("\n GPS Age: %lu sec, Processed=%d", gps.location.age()/1000, cnt);
+
+		if (gps.location.isValid()) Serial.printf(" Lat,Lng,Alt,Spd %f %f %.1f %.1f", gps.location.lat(), gps.location.lng(),gps.altitude.meters(),gps.speed.kmph());
+		else Serial.printf("\n GPS Location INVALID");
+
+		if (gps.date.isValid()) Serial.printf("  Date: %d-%d-%d", gps.date.year(), gps.date.month(), gps.date.day());
+		else Serial.printf("  Date: INVALID");
+
+		if (gps.time.isValid()) Serial.printf("  Time: %02d:%02d:%02d", gps.time.hour(), gps.time.minute(), gps.time.second());
+		else Serial.printf("  Time: INVALID");
+	}
+	void update(char* buf, int cnt) {
+		//int c;
+		//if (!(c=Serial2.available())) return;
+		
+		//c=Serial2.readBytesUntil('\n', tb1, 1024);
+		buf[cnt]=0;
+		//Serial.printf("\n(%d) %s", cnt, buf);
+		for (int i=0;i<cnt;i++)
+			gps.encode(buf[i]);
+	}
+} mygps;
+
 class Mhz14 
 {
 public:
 	int readings[100];
-	int numreadings;
+	int numreadings=0;
 	int ppm;
 
 	void begin(void) {
 		//const int co2_tx = 16;  //ESP32 16
 		//const int co2_rx = 17;  //ESP32 17
-		numreadings = 0;
-		Serial2.begin(9600);
+		while (Serial2.available()) Serial2.read();
 	}
 	
 	void measure() {
-		while (Serial2.available()) Serial2.read();
 		Serial2.write(cmd, 9);
 		//Serial.printf("\nco2 sent cmd");
 	}
@@ -115,14 +158,9 @@ public:
 		return numreadings++;
 	}
 	
-	int update(void) {
-		int c;
-		if (!(c=Serial2.available())) return -2;
-		
-		uint8_t response[9];
-		//Serial.printf(" > available %d",c);
-		c=Serial2.readBytes(response, 9);
+	void update(char *p, int c) {	
 		if (c == 9) {
+			char *response = p;
 			int responseHigh = (int) response[2];
 			int responseLow = (int) response[3];
 			ppm = (256 * responseHigh) + responseLow;
@@ -132,14 +170,11 @@ public:
 				Serial.println(" > co2 checksum error:");
 				for (int i=0;i<9;i++) Serial.printf(" %02x", response[i]);
 				Serial2.flush();
-				return -1;
 			}
 			Serial.printf("\n > read co2: %dppm@%d",ppm,append(ppm));
-			return ppm;
 		} else {
 			Serial.printf(" > read(9) fail got %dB",c);
 			Serial2.flush();
-			return -1;
 		}
 	}
 private:
@@ -148,33 +183,6 @@ private:
 	byte header[2] = { 0xFF, 0x86 };
 	byte chksum;
 } myco2;
-
-#include <TinyGPS.h>
-TinyGPS gps;
-class GPS {
-public:
-	float lat=0.0;
-	float lon=0.0;
-	bool first=true;
-	void begin() {
-		//const int gps_tx = 16;  //ESP32 16
-		//const int gps_rx = 17;  //ESP32 17
-		Serial2.begin(9600);
-	}
-	void update() {
-		unsigned long age;
-		while (Serial2.available())
-			gps.encode(Serial2.read());
-		
-		if (gps.satellites() != TinyGPS::GPS_INVALID_SATELLITES) {
-			gps.f_get_position(&lat, &lon, &age);
-			if(first) {
-				Serial.printf("\n Found GPS");
-				first=false;
-			}
-		}
-	}
-} mygps;
 
 HardwareSerial dustport(1);
 
@@ -234,6 +242,9 @@ public:
 			pm25=r[12]*256+r[13];
 			pm10=r[14]*256+r[15];
 			Serial.printf("\n > read dust: %d,%d@%d",pm25,pm10,append(pm25,pm10));
+			#ifdef USE_BLUETOOTH
+			SerialBT.printf("\nPM %d %d",pm25,pm10);
+			#endif
 			return 0;
 		} else {
 			Serial.printf(" > read(32) fail got %dB",c);
@@ -303,8 +314,6 @@ public:
 		*/
 	}
 } mygyro;
-
-#ifndef SHT1X
 
 #include "bsec.h"
 Bsec iaqSensor;
@@ -401,14 +410,16 @@ public:
 		reading[9]=iaqSensor.pressure/100;
 		reading[10]=iaqSensor.gasResistance/1000;
 
-
-
 		Serial.printf("\n > T+H+I++CVPG:");
 		for (int i=0; i<11;i++) Serial.printf(" %.f", reading[i]);
 		Serial.printf("@%d", append(reading));
+		#ifdef USE_BLUETOOTH
+		SerialBT.printf("\nTHIPG: %.1f %.1f %.1f %.1f %.1f",reading[0],reading[2],reading[4],reading[9],reading[10]);
+		#endif
 	}
 } mybme;
 
+#ifndef SHT1X
 #include <HTU21D.h>
 HTU21D htu21(HTU21D_RES_RH12_TEMP14);
 class HTU {
@@ -446,12 +457,15 @@ public:
 		temp=htu21.readTemperature();
 		humid=htu21.readHumidity();
 		Serial.printf("\n > read temp,humid: %.1f,%.1f@%d",temp,humid,append(temp,humid));
+		#ifdef USE_BLUETOOTH
+		SerialBT.printf("\nTH %.1f,%.1f",temp,humid);
+		#endif
 	}
 } mytemphumid;
 
 #else
 	
-#include <SHT1X.h>  //19@esp32-SDA@sht, 18@esp32-SCL@sht
+#include <SHT1x-ESP.h>  //19@esp32-SDA@sht, 18@esp32-SCL@sht
 SHT1x sht15(dataP, clockP);
 class TempHumid {
 public:
@@ -459,9 +473,12 @@ public:
 	float humid_readings[100];
 	int numreadings;
 	float temp, humid;
+	int ready=0;
 
 	void begin(void) {
 		numreadings = 0;
+		Serial.printf("\n using SHT1x");
+		ready=1;
 	}
 	
 	int append(float temp, float humid) {
@@ -480,6 +497,9 @@ public:
 		temp=sht15.readTemperatureC();
 		humid=sht15.readHumidity();
 		Serial.printf("\n > read temp,humid: %.1f,%.1f@%d",temp,humid,append(temp,humid));
+		#ifdef USE_BLUETOOTH
+		SerialBT.printf("\nTH %.1f,%.1f",temp,humid);
+		#endif
 	}
 } mytemphumid;
 #endif
@@ -574,7 +594,7 @@ public:
 		if(doc["target"]) target = String((const char*)doc["target"]);
 		if(doc["eap_login"]) strcpy(eap_login, (const char*)doc["eap_login"]); 
 		if(doc["eap_password"]) strcpy(eap_password, (const char*)doc["eap_password"]); 
-		if(doc["gps"]) gps=doc["gps"]; 
+		//if(doc["gps"]) gps=doc["gps"]; 
 	}
 	String eeprom;
 	int user;
@@ -590,7 +610,7 @@ public:
 	char eap_login[32];
 	char eap_password[32];
 	String target="";
-	int gps=0;
+	int gps=false;
 } myconf;
 
 class Console {
@@ -613,6 +633,13 @@ public:
 
 	void got(String from, const char *cmd) {
 		if (!strncmp(cmd, "reboot", 6)) ESP.restart();
+		
+		if (!strncmp(cmd, "gps", 3)) {
+			if (myconf.gps) myconf.gps=false;
+			else myconf.gps=true;
+			Serial.printf("\n set gps=%d", myconf.gps);
+			return;
+		}
 		
 		if (!strncmp(cmd, "co2 calibration", 16)) myco2.calibrate();
 		
@@ -640,7 +667,6 @@ public:
 
 #include <Regexp.h>
 MatchState ms;
-char tbuf[4096], tb1[1024], tb2[1024], tb3[1024];
 
 #include "esp_wifi.h"
 #include "esp_wpa2.h"
@@ -701,12 +727,10 @@ public:
 		
 		unsigned long m2=millis();
 		unsigned long m1=millis();
-		myled.off();
-		myled.on(100);
 		int k=0;
 		while (WiFi.status() != WL_CONNECTED) {
-			if (m2+60000<millis()) {
-				Serial.printf("60 sec... failed");
+			if (m2+30000<millis()) {
+				Serial.printf("30 sec... failed");
 				return 0;
 			}
 			_console->update();
@@ -715,13 +739,16 @@ public:
 				m1=millis();
 				myled.on(100);
 				Serial.printf(".");
+				myled.on(50);
 			}
 		}
+		netstat = "wifi ok";
 		Serial.printf(" connected. ip=%s", WiFi.localIP().toString().c_str());
 		
 		WiFi.macAddress(mac);
 		sprintf(macaddr, "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 		Serial.printf(", mac=%s", macaddr);
+		myled.off();
 		return 1;
 	}
 	int best() { //ZZ
@@ -761,7 +788,6 @@ public:
 			if (j==0) kn=2; else kn=1; // 개방형은 Public 표시 여부 구분
 			for (int k=0;k<kn;k++) {
 				for (int i=0;i<n;i++) {
-					if (WiFi.SSID(i)=="splavice") the_ssid=true;
 					if (j<6 && (WiFi.SSID(i)==""||WiFi.encryptionType(i) != scan_order[j])) continue;
 					if (j==0 && k==0 && WiFi.SSID(i).indexOf("Public") <0) continue;
 					if (j==0 && k==1 && WiFi.SSID(i).indexOf("Public") >=0) continue;
@@ -771,6 +797,12 @@ public:
 					Serial.printf("\n%2d:",i);
 					Serial.print(WiFi.SSID(i)==""?"HIDDEN":WiFi.SSID(i));
 					Serial.printf(" [%s]", translateEncryptionType(WiFi.encryptionType(i)).c_str());
+					
+					if (WiFi.SSID(i)=="splavice") {
+						Serial.printf(" --> found splavice");
+						the_ssid = true;
+					}
+					
 					if ((myconf.secure==true && WiFi.encryptionType(i)==5) || (myconf.secure==false && WiFi.encryptionType(i)==0)) {
 						if (WiFi.SSID(i)=="") { Serial.printf(" > Hidden"); continue; }
 						if (WiFi.SSID(i).indexOf("Public")<0) { Serial.printf(" > !Public"); continue; }
@@ -793,12 +825,12 @@ public:
 			}
 		}
 
+		if (the_ssid && verify("splavice", "means.success", -1, 0)) {
+			myssid = "splavice";
+			return; 
+		}
 		for (int i=0; i<n_wifi; i++) {
-			if (the_ssid && verify("splavice", "means.success", -1, 0)) {
-				Serial.printf("\n using splavice");
-				myssid = "splavice";
-				return; 
-			}
+
 			
 			int j = best();
 			if (j<0) break;
@@ -817,14 +849,15 @@ public:
 		if (WiFi.status() == WL_CONNECTED) return;
 		
 		if (myssid =="") scan();
-		else verify(myssid, mypassword, -1, 0);
+		else if (!verify(myssid, mypassword, -1, 0)) scan();
 	}
 	void begin(char* _ssid, char* _password, Console* console) { //ZZ
-		myssid=String(_ssid);
+		myssid=String(_ssid); // config에서 가져온것
 		mypassword=String(_password);
 		myssid.trim();
 		mypassword.trim();
 		_console = console;
+		#ifdef WIFISHOW
 		void WiFiEvent(WiFiEvent_t event);
 		WiFi.onEvent(WiFiEvent);
 		WiFiEventId_t eventID = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
@@ -839,7 +872,7 @@ public:
 			if (info.wifi_sta_disconnected.reason==23) Serial.printf("REASON_802_1X_AUTH_FAILED"); else
 			Serial.print(info.wifi_sta_disconnected.reason);
 		}, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-		connect();
+		#endif
 		myled.on();
 	}
 	String translateEncryptionType(wifi_auth_mode_t encryptionType) {
@@ -1640,6 +1673,7 @@ public:
 		if (!mqttClient.connected()) {
 			Serial.printf("\n connecting mqtt server...");
 			if (mqttClient.connect(clientId.c_str(), mqttUser, mqttPassword )) {
+				mywifi.netstat = "mqtt ok";
 				mqttClient.setKeepAlive(60);
 				mqttClient.setSocketTimeout(60);
 				Serial.printf("connected as %s", clientId.c_str());
@@ -1647,7 +1681,11 @@ public:
 				sprintf(topic, "%s/%d/cmd", myconf.topic, myconf.user);
 				Serial.printf("\nmqtt subscribed %s", topic);
 				mqttClient.subscribe(topic);
+				#ifdef USE_BLUETOOTH
+				SerialBT.printf("\ninit mqtt ok");
+				#endif
 			} else {
+				mywifi.netstat = "mqtt fail";
 				Serial.printf("\nmqtt client_id %s, failed with %d %s", clientId.c_str(), mqttClient.state(), status2str(mqttClient.state()));
 				Serial.printf("\n check network connection. ");
 				for (int i=0;i<2;i++) {
@@ -1671,13 +1709,24 @@ void do_tick_1sec() {
 }
 
 void do_tick_6sec() {
+	static unsigned long gpscnt=0;
 	if (mybme.ready) mybme.update();
 	else if(mytemphumid.ready) mytemphumid.update();
+	if (gps.charsProcessed()-gpscnt < 10) {
+		Serial.printf("\n %d GPS is not responding..", gps.charsProcessed());
+		sprintf(tb1, "{\"user\":%d,\"serial\":%lu,\"error\":\"%s\"}", myconf.user, mywifi.serial, "GPS no data");
+		Serial.println(tb1);
+		mymqtt.publish("errors", tb1);
+		return;
+	} else {
+		mygps.print(gps.charsProcessed()-gpscnt);
+		gpscnt = gps.charsProcessed();
+	}
 }
 
 void do_tick_2sec() {
 	myled.on(30);
-	if (!myconf.gps) myco2.measure();
+	if (!myconf.gps) myco2.measure();  //MHZ14 send command
 	#ifdef OLED
 	// CO2 1, Humidity 2, Dust 3, O2 4, Temperature 5, CO 6, Volt 7, voc 8
 	static int sensors[5] = {1, 2, 5, 3, 8};
@@ -1695,17 +1744,22 @@ void do_tick_2sec() {
 
 void do_tick_60sec() {
 	String format="", values="", comma="";
+	static unsigned got_dust = 0;
+	static unsigned got_co2 = 0;
 	
 	myled.on();
 	if (mydust.numreadings>0) {
+		got_dust += mydust.numreadings;
 		sprintf(tbuf, "%.0f,%.0f", mymedian.get(mydust.pm25_readings, mydust.numreadings), mymedian.get(mydust.pm10_readings, mydust.numreadings));
 		mydust.numreadings=0;
 		format += "D+";
 		values += comma+String(tbuf);
 		comma=",";
 		mydust.numreadings =0;
-	}
+	} else
+		Serial.printf("\n Dust Sensor Device is not responding");
 	if (myco2.numreadings>0) {
+		got_co2 += myco2.numreadings;
 		sprintf(tbuf, "%.0f", mymedian.get(myco2.readings, myco2.numreadings));
 		mydust.numreadings=0;
 		format += "C";
@@ -1726,7 +1780,7 @@ void do_tick_60sec() {
 			values += comma+tbuf;
 			comma=",";
 		}
-		format += "T+H+I++CVPG";
+		format += "T+H+I+++VPG";
 		mybme.numreadings=0;
 	} else {
 		if (mytemphumid.numreadings>0) {
@@ -1749,17 +1803,48 @@ void do_tick_60sec() {
 		format +="TG+++++";
 	}
 	
-	if (myconf.gps==1 && mygps.lat >1 && mygps.lon >1) {
-		format +="L+";
-		sprintf(tbuf, "%f,%f", mygps.lat, mygps.lon);
-		values += comma+tbuf;
-		comma=",";
-	}
-	
 	sprintf(tbuf, "{\"user\":%d,\"mac\":\"%s\",\"rssi\":%d,\"topic\":\"%s\",\"device\":\"%s\",\"version\":\"%s\",\"serial\":%lu,\"attribute\":\"%s\",\"data\":\"%s\"}", myconf.user, mywifi.macaddr, WiFi.RSSI(), myconf.topic, myconf.device, VERSION, mywifi.serial++,format.c_str(),values.c_str());
+	if (strlen(tbuf)>MQTT_MAX_PACKET_SIZE) {
+		Serial.printf("\n pubsub buffer overflow");
+	}
 
 	mymqtt.publish("data", tbuf);
 	myled.off();
+	#ifdef USE_BLUETOOTH
+	SerialBT.printf("\nshoot %s",values.c_str());
+	#endif
+	String m="";
+	if (mywifi.serial>5) {
+		if (got_dust < 10) m += "dust sensor is not responding";
+		if (myconf.gps && gps.charsProcessed() < 10) m += m==""?String(""):String(" / ") + "gps is not responding";
+		if (!myconf.gps && got_co2 < 10) m += m==""?String(""):String(" / ") + "CO2 sensor is not responding / ";
+	}
+	if (m !="") {
+		sprintf(tb1, "{\"user\":%d,\"reboot reason\":\"%s\"", myconf.user, m.c_str());
+		Serial.println(tb1);
+		mymqtt.publish("reboot", tb1);
+		reboot(5);
+	}
+}
+
+void do_tick_60minus3sec() {
+	String format="";
+	
+	myled.on();
+	if (gps.location.isValid()) {
+		format ="L++++";
+		sprintf(tb1, "%f,%f,%.1f,%.1f,%d", gps.location.lat(), gps.location.lng(),gps.altitude.meters(),gps.speed.kmph(),gps.location.age()/1000);
+	
+		sprintf(tbuf, "{\"user\":%d,\"serial\":%lu,\"attribute\":\"%s\",\"data\":\"%s\",\"continue\":\"yes\"}", myconf.user, mywifi.serial,format.c_str(),tb1);
+		if (strlen(tbuf)>MQTT_MAX_PACKET_SIZE) {
+			Serial.printf("\n pubsub buffer overflow");
+		}
+		mymqtt.publish("data0", tbuf);
+	} 
+	myled.off();
+	#ifdef USE_BLUETOOTH
+	SerialBT.printf("\nshoot %s",tbuf);
+	#endif
 }
 
 void reboot(int s) {
@@ -1782,6 +1867,9 @@ void setup() {
 	Serial.printf("\n%s %s %s", __DATE__, __TIME__, __FILENAME__);
 	myled.begin();
 	myconf.read();
+	#ifdef USE_BLUETOOTH
+	SerialBT.begin(String(myconf.user));
+	#endif
 	Serial.printf("\n waiting for configuration command, if you need..");
 	for (int i=0;i<10;i++) {
 		myconsole.update();
@@ -1790,29 +1878,36 @@ void setup() {
 	}
 	Serial.printf("  done waiting.");
 	
-	if (myconf.gps) {
-		Serial.printf("\n using GPS");
-		mygps.begin();
-	} else {
-		Serial.printf("\n using CO2 Sensor");
-		myco2.begin(); //16,17 Serial
-	}
-
 	Serial.printf("\n using Dust Sensor");
 	mydust.begin(); //5,4 Serial
 	delay(1);
-	
+	Serial2.begin(9600, SERIAL_8N1, 16, 17); //16,17 Serial CO2 and GPS
+	delay(1);
+	Serial.printf("\n will detect CO2 or GPS. CO2 assumed");
+
+#ifdef OLED
+	Wire.begin(23, 22); // oled
+#else
 	Wire.begin(dataP, clockP);  //19,18  I2C
 	mygyro.begin(); //I2C
 	mybme.begin(); //I2C
 	delay(1);
-	if (!mybme.ready) mytemphumid.begin(); //I2C
+#endif
+
+	mytemphumid.begin(); //I2C
+
 	myscreen.begin(myconf.user, myconf.ssid, myconf.password); //19,18 I2C
 	delay(1);
+	#ifdef USE_BLUETOOTH
+	SerialBT.printf("\ninit sensor ok");
+	#endif
 	
 	mywifi.begin(myconf.ssid, myconf.password, &myconsole);
 	delay(1);
 	mywifi.connect();
+	#ifdef USE_BLUETOOTH
+	SerialBT.printf("\ninit wifi ok %s", mywifi.myssid);
+	#endif
 	mycaptive.begin();
 	mycaptive.go_captive(); //ZZ
 	
@@ -1850,6 +1945,7 @@ void main_loop(void *param) { Serial.printf("\n# main_loop task running on core 
 	static unsigned mark=0;
 	static unsigned mark2=0;
 	static unsigned mark3=0;
+	static unsigned mark4=0;
 	
 	if (mark3<millis()) {
 		static bool first=1;
@@ -1871,18 +1967,48 @@ void main_loop(void *param) { Serial.printf("\n# main_loop task running on core 
 
 	if (minute< millis()) {
 		minute=millis()+60000;
+		mark4=minute - 3000; //3초전
 		do_tick_60sec();
 	}
-
+	if (mark4 && mark4<millis()) {
+		mark4=0;
+		do_tick_60minus3sec();
+	}
 	mqttClient.loop();
-	if (!myconf.gps) myco2.update();
-	mydust.update();
 }}
 
 void update_loop(void *param) {	Serial.printf("\n# update_task running on core %d", xPortGetCoreID()); 	while(1) { vTaskDelay(1);
 	myconsole.update();
-	mygps.update();
 	myled.update();
 	mycaptive.update();
+	mydust.update();
+	int c;
+	static bool first = true;
+	if((c=Serial2.available())) {
+		c=Serial2.readBytes(tb1, c);
+		tb1[c]=0;
+		//Serial.printf("\n [%d]%s", c, tb1);
+		if (first && c>=9) {
+			Serial.printf("\n Serial data available %d",c);
+			for (int i=0;i<c-1; i++) {
+				if (tb1[i]==0xff && tb1[i+1]==0x86) {
+					Serial.printf(" ... Detect CO2 data. Confirmed.");
+					myconf.gps = false;
+					first = false;
+					break;
+				}
+				if (tb1[i]=='$' && tb1[i+1]=='G') {
+					Serial.printf(" ... Detect GPS data. Confirmed.");
+					myconf.gps = true;
+					first = false;
+					break;
+				}
+			}
+		}
+
+		if (myconf.gps) mygps.update(tb1, c);
+		else myco2.update(tb1, c);
+	}
+	
 }}
 

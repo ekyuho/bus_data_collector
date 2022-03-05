@@ -1,7 +1,10 @@
+//#define OLED
 #ifndef OLED
 class Screen {
 public:
-	void begin(int userno, char* ssid, char* password) {}
+	void begin(int userno, char* ssid, char* password) {
+		Serial.printf("\n no screen");
+	}
 	void visualize(int type, float v, String netstat) {}
 	void visualize(int type, float p1, float p2, String netstat) {}
 };
