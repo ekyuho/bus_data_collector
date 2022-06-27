@@ -1,11 +1,12 @@
-#define VERSION "V2.251"
+#define VERSION "V2.42"
 #define BANNER "Bus Monitor  Kyuho_Kim"
 //#define __FILENAME__ (strrchr(__FILE__, '\\') ? strrchr(__FILE__, '\\') + 1 : __FILE__)
 
 #define REBOOT reboot(180);
 void reboot(int);
 
-#define DEFAULT1 "{\"user\":1000,\"gps\":0,\"topic\":\"s2m\",\"device\":\"bus\",\"target\":\"busan\",\"ssid\":\"\",\"password\":\"\",\"secure\":\"no\",\"eap_login\":\"wifi\",\"eap_password\":\"wifi\",\"mqttserver\":\"damoa.io\"}"
+//#define DEFAULT1 "{\"user\":1000,\"gps\":0,\"topic\":\"s2m\",\"device\":\"bus\",\"target\":\"busan\",\"ssid\":\"\",\"password\":\"\",\"secure\":\"no\",\"eap_login\":\"wifi\",\"eap_password\":\"wifi\",\"mqttserver\":\"damoa.io\"}"
+#define DEFAULT1 "{\"user\":1100,\"gps\":1,\"topic\":\"s2m\",\"device\":\"bus-inside\",\"target\":\"busan\",\"ssid\":\"\",\"password\":\"\",\"mqttserver\":\"damoa.io\"}"
 
 /*
 {"user":100005,"topic":"s2m","device":"bus","gps":0,"ssid":"","password":"","target":"seoul","secure":"no","eap_login":"wifi","eap_password":"wifi","mqttserver":"damoa.io"}
@@ -15,7 +16,9 @@ void reboot(int);
 */
 //#define SHT1X 
 //#define OLED   // use twowire for oled or sensor
-                 // should modify screen.h too
+#include "screen.h"
+Screen myscreen;
+
 //#define GYRO  auto config
 //#define DS18B20
 
@@ -42,10 +45,7 @@ const char* mqttPassword = NULL;
 BluetoothSerial SerialBT;
 #endif
 
-#include "screen.h"
-Screen myscreen;
-
-char tbuf[4096], tb1[1024], tb2[1024], tb3[1024];
+char tbuf[4096], tb1[4096], tb2[1024], tb3[1024];
 
 #include <QuickStats.h>
 QuickStats stats;
@@ -102,7 +102,7 @@ public:
 			return;
 		}
 		
-		Serial.printf("\n GPS Age: %lu sec, Processed=%d", gps.location.age()/1000, cnt);
+		Serial.printf("\n GPS Age: %d sec, Processed=%d", gps.location.age()/1000, cnt);
 
 		if (gps.location.isValid()) Serial.printf(" Lat,Lng,Alt,Spd %f %f %.1f %.1f", gps.location.lat(), gps.location.lng(),gps.altitude.meters(),gps.speed.kmph());
 		else Serial.printf("\n GPS Location INVALID");
@@ -194,9 +194,10 @@ public:
 	int pm25, pm10;
 
 	void begin(void) {
-		const int dust_tx = 5;  //ESP32 5
 		numreadings = 0;
-		dustport.begin(9600, SERIAL_8N1, dust_tx, 4);
+		//int rx=5;
+		int rx=13; // only for 한자문버전:w
+		dustport.begin(9600, SERIAL_8N1, rx, 4);
 		while(dustport.available()) dustport.read();
 	}
 	
@@ -315,109 +316,126 @@ public:
 	}
 } mygyro;
 
-#include "bsec.h"
-Bsec iaqSensor;
+#include <Adafruit_Sensor.h>
+#include "Adafruit_BME680.h"
+#define SEALEVELPRESSURE_HPA (1013.25)
+Adafruit_BME680 bme;
 
 class BME680 {
 public:
 	// 0:temp 1:humid 2:gas 3:pressure 4:alt
-	float readings[11][100];
-	float reading[11];
+	float readings[5][100];
+	float reading[5];
 	int numreadings=0;
 	int ready=0;
-	bsec_virtual_sensor_t sensorList[10] = {
-		BSEC_OUTPUT_RAW_TEMPERATURE,
-		BSEC_OUTPUT_RAW_PRESSURE,
-		BSEC_OUTPUT_RAW_HUMIDITY,
-		BSEC_OUTPUT_RAW_GAS,
-		BSEC_OUTPUT_IAQ,
-		BSEC_OUTPUT_STATIC_IAQ,
-		BSEC_OUTPUT_CO2_EQUIVALENT,
-		BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
-		BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
-		BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
-	};
-	String title[11]={"raw temperature [°C]", "pressure [hPa]", "raw relative humidity [%]", "gas [Ohm]", "IAQ", "IAQ accuracy", "temperature [°C]", "relative humidity [%]", "Static IAQ", "CO2 equivalent", "breath VOC equivalent"};
 	
 	void begin() {
-		iaqSensor.begin(BME680_I2C_ADDR_PRIMARY, Wire);
-		String output = "\nBSEC library version " + String(iaqSensor.version.major) + "." + String(iaqSensor.version.minor) + "." + String(iaqSensor.version.major_bugfix) + "." + String(iaqSensor.version.minor_bugfix);
-		//Serial.print(output);
-		checkIaqSensorStatus();
-		if (!ready) {
-			Serial.printf("\n no BME680");
+		if (!bme.begin()) {
+			Serial.printf("\n no BME680.");
 			return;
 		}
-		
-		iaqSensor.updateSubscription(sensorList, 10, BSEC_SAMPLE_RATE_LP);
-	}
-	
-	void checkIaqSensorStatus(void) {
-		String output;
-	  if (iaqSensor.status != BSEC_OK) {
-		if (iaqSensor.status < BSEC_OK) {
-		  output = "\n BSEC error code : " + String(iaqSensor.status);
-		  Serial.println(output);
-		} else {
-		  output = "\n BSEC warning code : " + String(iaqSensor.status);
-		  Serial.print(output);
-		}
-		return;
-	  }
-
-	  if (iaqSensor.bme680Status != BME680_OK) {
-		if (iaqSensor.bme680Status < BME680_OK) {
-		  output = "\n BME680 error code : " + String(iaqSensor.bme680Status);
-		  //Serial.print(output);
-		} else {
-		  output = "\n BME680 warning code : " + String(iaqSensor.bme680Status);
-		  Serial.print(output);
-		}
-		return;
-	  }
-	  Serial.printf("\n found bme680");
-	  ready=1;
+		Serial.printf("\n found BME680");
+		bme.setTemperatureOversampling(BME680_OS_8X);
+		bme.setHumidityOversampling(BME680_OS_2X);
+		bme.setPressureOversampling(BME680_OS_4X);
+		bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
+		bme.setGasHeater(320, 150); // 320*C for 150 ms
+		ready=1;
 	}
 
 	int append(float reading[]) {
 		if (numreadings==100) {
 			for(int i=0;i<99;i++)
-				for (int j=0;j<11;j++) readings[j][i]=readings[j][i+1];
+				for (int j=0;j<5;j++) readings[j][i]=readings[j][i+1];
 			numreadings--;
 		}
 			
-		for (int j=0;j<11;j++) readings[j][numreadings]=reading[j];
+		for (int j=0;j<5;j++) readings[j][numreadings]=reading[j];
 		return numreadings++;
 	}
 
 	void update(void) {
 		if (!ready) return;
-		if (!iaqSensor.run()) {
-			Serial.printf("\n bme680 is not ready");
+		if (! bme.performReading()) {
+			Serial.println("Failed to read BME:(");
 			return;
 		}
 
-		// "T+H+I++CVBPG"
-		reading[0]=iaqSensor.temperature;
-		reading[1]=iaqSensor.rawTemperature;
-		reading[2]=iaqSensor.humidity;
-		reading[3]=iaqSensor.rawHumidity;
-		reading[4]=iaqSensor.staticIaq;
-		reading[5]=iaqSensor.iaq;
-		reading[6]=iaqSensor.iaqAccuracy;
-		reading[7]=iaqSensor.co2Equivalent;
-		reading[8]=iaqSensor.breathVocEquivalent;
-		reading[9]=iaqSensor.pressure/100;
-		reading[10]=iaqSensor.gasResistance/1000;
+		// "THVPA"
+		reading[0]=bme.temperature;
+		reading[1]=bme.humidity;
+		reading[2]=bme.gas_resistance / 1000.0;
+		reading[3]=bme.pressure / 100.0;
+		reading[4]=bme.readAltitude(SEALEVELPRESSURE_HPA);
 
-		Serial.printf("\n > T+H+I++CVPG:");
-		for (int i=0; i<11;i++) Serial.printf(" %.f", reading[i]);
+
+		Serial.printf("\n > THVPA:");
+		for (int i=0; i<5;i++) Serial.printf(" %.f", reading[i]);
 		Serial.printf("@%d", append(reading));
 		#ifdef USE_BLUETOOTH
 		SerialBT.printf("\nTHIPG: %.1f %.1f %.1f %.1f %.1f",reading[0],reading[2],reading[4],reading[9],reading[10]);
 		#endif
 	}
 } mybme;
+
+#include <SensirionI2CSgp41.h>
+SensirionI2CSgp41 sgp41;
+
+class _sgp41 {
+public:
+	int readings[4][100]; // VNTH
+	int numreadings=0;
+	int ready=0;
+	
+    int conditioning_s=10;
+    int error;
+	void begin(void) {
+		uint16_t error;
+		char errorMessage[256];
+
+		sgp41.begin(Wire);
+
+		uint16_t serialNumber[3];
+		uint8_t serialNumberSize = 3;
+		uint16_t testResult;
+        
+
+		if (!sgp41.getSerialNumber(serialNumber, serialNumberSize)) {
+			Serial.printf("\n found SGP41");
+			if (!sgp41.executeSelfTest(testResult)) {
+				Serial.printf("... workiing ok");
+				ready=1;
+			} else
+				Serial.printf("... self test failed");
+		}
+	}
+    void update(void) {
+        uint16_t defaultRh = 0x8000;
+        uint16_t defaultT = 0x6666;
+        uint16_t srawVoc = 0;
+        uint16_t srawNox = 0;
+        if (conditioning_s > 0) {
+            error = sgp41.executeConditioning(defaultRh, defaultT, srawVoc);
+            conditioning_s--;
+        } else {
+            error = sgp41.measureRawSignals(defaultRh, defaultT, srawVoc, srawNox);
+        }
+        if (error) {
+            char errorMessage[256];
+            Serial.print("Error trying to execute measureRawSignals(): ");
+            errorToString(error, errorMessage, 256);
+            Serial.println(errorMessage);
+        } else {
+            Serial.printf("\n VN= %d %d @%d", srawVoc, srawNox, numreadings);
+
+			readings[0][numreadings]=srawVoc;
+			readings[1][numreadings]=srawNox;
+			readings[2][numreadings]=defaultT;
+			readings[3][numreadings]=defaultRh;
+			numreadings++;
+        }
+    }
+} mysgp;
 
 #ifndef SHT1X
 #include <HTU21D.h>
@@ -594,7 +612,8 @@ public:
 		if(doc["target"]) target = String((const char*)doc["target"]);
 		if(doc["eap_login"]) strcpy(eap_login, (const char*)doc["eap_login"]); 
 		if(doc["eap_password"]) strcpy(eap_password, (const char*)doc["eap_password"]); 
-		//if(doc["gps"]) gps=doc["gps"]; 
+		if(doc["gps"]) gps=doc["gps"]; 
+		if(doc["oledsht"]) oledsht=doc["oledsht"];
 	}
 	String eeprom;
 	int user;
@@ -610,7 +629,8 @@ public:
 	char eap_login[32];
 	char eap_password[32];
 	String target="";
-	int gps=false;
+	int gps=0;
+	int oledsht=0;
 } myconf;
 
 class Console {
@@ -635,8 +655,8 @@ public:
 		if (!strncmp(cmd, "reboot", 6)) ESP.restart();
 		
 		if (!strncmp(cmd, "gps", 3)) {
-			if (myconf.gps) myconf.gps=false;
-			else myconf.gps=true;
+			if (myconf.gps) myconf.gps=0;
+			else myconf.gps=1;
 			Serial.printf("\n set gps=%d", myconf.gps);
 			return;
 		}
@@ -674,6 +694,7 @@ class _wifi { //ZZ
 public:
 	int pub_wifi[64];
 	int n_wifi=0;
+	String myoldssid;
 	String myssid;
 	String mypassword;
 	String netstat="init";
@@ -700,6 +721,7 @@ public:
 		WiFi.mode(WIFI_STA);
 		if (myconf.secure) {
 			Serial.printf("\n WPA2-Enterprise login using %s:%s", myconf.eap_login, myconf.eap_password);
+			/*
 			wifi_country_t country = {
 				.cc = "JP",
 				.schan = 1,
@@ -712,6 +734,7 @@ public:
 			esp_wifi_sta_wpa2_ent_set_username((uint8_t *)myconf.eap_login, strlen(myconf.eap_login));
 			esp_wifi_sta_wpa2_ent_set_password((uint8_t *)myconf.eap_password, strlen(myconf.eap_password));
 			esp_wifi_sta_wpa2_ent_enable();
+			*/
 		}
 		delay(1);
 		if (channel == -1) {
@@ -743,7 +766,7 @@ public:
 			}
 		}
 		netstat = "wifi ok";
-		Serial.printf(" connected. ip=%s", WiFi.localIP().toString().c_str());
+		Serial.printf(" Got connected. ip=%s", WiFi.localIP().toString().c_str());
 		
 		WiFi.macAddress(mac);
 		sprintf(macaddr, "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -850,6 +873,7 @@ public:
 		
 		if (myssid =="") scan();
 		else if (!verify(myssid, mypassword, -1, 0)) scan();
+		Serial.printf("\n wifi reconnect");
 	}
 	void begin(char* _ssid, char* _password, Console* console) { //ZZ
 		myssid=String(_ssid); // config에서 가져온것
@@ -904,13 +928,16 @@ public:
 
 class URL { //ZZ
 public:
-	char host[64];
-	char sport[8];
-	char path[32];
+	String host;
+	String port;
+	String path;
 	String param;
 	String url;
 	
-	void decompose(String _url) { //ZZ
+	void print(void) {
+		Serial.printf("\nmyurl= %s : %s %s %s = %s", host.c_str(), port.c_str(), path.c_str(), param.c_str(), url.c_str());
+	}
+	void set(String _url) { //ZZ
 		url = _url;
 		strcpy(tb1, _url.c_str());
 		ms.Target(tb1);
@@ -927,34 +954,34 @@ public:
 		ms.Target(tb2);
 		ms.Match("(.*):(.*)");
 		if (ms.level==2) {
-			ms.GetCapture(host, 0);
-			ms.GetCapture(sport, 1);
+			ms.GetCapture(tbuf, 0);
+			host = String(tbuf);
+			ms.GetCapture(tbuf, 1);
+			port = String(tbuf);
 		} else {
-			strcpy(host, tb2);
-			strcpy(sport, "80");
+			host = String(tb2);
+			port = String("80");
 			//Serial.printf("\n port defaulted to 80");
 		} 
 		ms.Target(tb3);
 		ms.Match("(.*)%?(.*)");
 		//Serial.printf("\n ms.match=%d", ms.level);
 		if (ms.level==2) {
-			ms.GetCapture(path, 0);
-			ms.GetCapture(tb2, 1);
+			ms.GetCapture(tbuf, 0);
+			path=String(tbuf);
+			ms.GetCapture(tbuf, 1);
 			param="";
-			for (int i=0; i<strlen(tb2); i++) {
-				if (tb2[i]==':') param +=String("%3a"); else
-				if (tb2[i]=='/') param +=String("%2f"); else
-				if (tb2[i]=='?') param +=String("%3f"); else
-				param +=String(tb2[i]);
+			for (int i=0; i<strlen(tbuf); i++) {
+				if (tbuf[i]==':') param +=String("%3a"); else
+				if (tbuf[i]=='/') param +=String("%2f"); else
+				if (tbuf[i]=='?') param +=String("%3f"); else
+				param +=String(tbuf[i]);
 			}
 		} else {
-			strcpy(path, tb3);
+			path=String(tb3);
 			param="";
 		}
 		//Serial.printf("\n decompose: %s %s%s %s %s", host, sport, sport, path, param.c_str());
-	}
-	void refresh() {
-		url = String("http://")+host+":"+sport+path+param;
 	}
 } myurl;
 
@@ -1125,19 +1152,9 @@ public:
 		sprintf(busmac, "%02X-%02X-%02X-%02X-%02X-%02X", *macp++, *macp++, *macp++, *macp++, *macp++, *macp++);
 	}
 	
-	String get(String url) { //ZZ
-		myurl.decompose(url);
-		WiFiClient client;
-		
-		String param1 = myurl.param==""?"":"?"+myurl.param;
-		Serial.printf("\nfetching http:// %s : %d %s %s", myurl.host, atoi(myurl.sport), myurl.path, param1.c_str());
-		if (!client.connect(myurl.host, atoi(myurl.sport))) {
-			Serial.printf(" failed to open tcp");
-			reboot(5);
-		}
-		client.print(String("GET ") + myurl.path + param1 +" HTTP/1.1\r\n" +
-			"Host: " + myurl.host + ":"+ myurl.sport +"\r\n" +
-			"Connection: close\r\n\r\n");
+	WiFiClient client;
+
+	String receive() {
 		unsigned long timeout = millis();
 		while (client.available() == 0) {
 			if (millis() - timeout > 30000) {
@@ -1149,21 +1166,93 @@ public:
 		//Serial.printf("\n retrieve data");
 
 		String s1="";
+		int k=0;
+		int length=0;
+		int length_all=0;
+		int two_nl=0;
 		while(client.available()) {
-			int c=client.read((uint8_t*)tb1, 1024);
-			delay(100);
+			int c=client.readBytesUntil('\n', (uint8_t*)tb1, 4096);
 			tb1[c]=0;
-			s1 += String(tb1);
+			if (two_nl>=1) length-=c;
+			if (k==256) Serial.printf("\n <skip> at line 10\n");
+			if (k++ <256) {
+				Serial.printf("\n(%d) ", k);
+				for (int i=0;i<strlen(tb1);i++) {
+					if (tb1[i]=='\r') Serial.printf("\\r");
+					else Serial.printf("%c", tb1[i]); 
+				}
+			}
+			//Serial.printf("\n (%d)%s", c,tb1);
+			ms.Target(tb1);
+			if (ms.Match("Content%-Length: +(%d+)")==REGEXP_MATCHED) {
+				length=length_all=String(ms.GetCapture(tb2, 0)).toInt();
+				Serial.printf(" --> match Content-Length: %d", length);
+			}
+			if (tb1[0]=='\r') two_nl++;
+			s1 += String(tb1)+String('\n');
+			bool first=true;
+			if (length>0 && !client.available()) {
+				if (first) {
+					Serial.printf("\n *** WAIT (at %d/%d bytes)***\n", length, length_all);
+					first=false;
+				}
+				delay(1);
+			}
 		}
 		
 		client.stop();
 		return s1;
 	}
+	
+	String get() { //ZZ
+		myled.on();
+
+		String param1 = myurl.param==""?"":"?"+myurl.param;
+		Serial.printf("\n GET http:// %s : %d %s %s", myurl.host.c_str(), myurl.port.toInt(), myurl.path.c_str(), myurl.param.c_str());
+		if (!client.connect(myurl.host.c_str(), myurl.port.toInt())) {
+			Serial.printf(" failed to open tcp");
+			reboot(5);
+		}
+		client.println(String("GET ") + myurl.path + param1 +" HTTP/1.1");
+		client.println("Host: " + myurl.host);
+		if (header.cookie !="") client.println("Cookie: "+ header.cookie);
+		client.println("Connection: close");
+		client.println();
+		
+		String r= receive();
+		myled.off();
+		return r;
+	}
+
+	String post(void) { //ZZ
+		myled.on();
+		
+		String param1 = myurl.param==""?"":"?"+myurl.param;
+		Serial.printf("\n POST http:// %s : %d %s %s", myurl.host.c_str(), myurl.port.toInt(), myurl.path.c_str(), myurl.param.c_str());
+		if (!client.connect(myurl.host.c_str(), myurl.port.toInt())) {
+			Serial.printf(" failed to open tcp");
+			reboot(5);
+		}
+		client.println(String("POST ") + myurl.path  +" HTTP/1.1");
+		client.println(String("Host: ") + myurl.host);
+		client.println("Connection: close");
+		client.println("Content-Type: application/x-www-form-urlencoded");
+		client.println("Content-Length: "+ String(myurl.param.length()));
+		//if (header.cookie !="") client.println("Cookie: "+ header.cookie);
+		client.println();
+		client.println(myurl.param);
+		
+		String r= receive();
+		myled.off();
+		return r;
+	}
+	
 	void parse_header(String h) { //ZZ
 		//Serial.println();
 		header.code="";
 		header.location="";
 		header.length=0;
+		header.cookie="";
 		String current = h;
 		int len=current.length();
 		int i=0;
@@ -1193,10 +1282,17 @@ public:
 				header.code=String(ms.GetCapture(tb2, 0));
 				Serial.printf(" --> match %s", header.code.c_str());
 			}
+			if (ms.Match("Content%-Length: +(%d+)")==REGEXP_MATCHED) {
+				header.length=String(ms.GetCapture(tb2, 0)).toInt();
+				Serial.printf(" --> match Content-Length: %d", header.length);
+			}
+			if (ms.Match("Set%-Cookie: +([%a%d=_]*);")==REGEXP_MATCHED) {
+				header.cookie=String(ms.GetCapture(tb2, 0));
+				Serial.printf(" --> match Cookie: %s", header.cookie.c_str());
+			}
 			if (ms.Match("Location: *(http://.*) *")>0) {
 				String s1 = String(ms.GetCapture(tb2, 0));
-				s1.toLowerCase();
-				int t=s1.indexOf("=http");
+				int t=s1.indexOf("=http");  // depending upen developers spelling
 				if (t<0) {
 					header.location = s1;
 				} else {
@@ -1204,7 +1300,7 @@ public:
 					for (int i=t+1; i<s1.length(); i++) {
 						if (tb2[i]==':') header.location +=String("%3a"); else
 						if (tb2[i]=='/') header.location +=String("%2f"); else
-						if (tb2[i]=='?') header.location +=String("%3f"); else
+						if (tb2[i]=='?') header.location +=String("%3f"); 
 						header.location +=String(tb2[i]);
 					}
 				}
@@ -1216,30 +1312,9 @@ public:
 				REBOOT;
 			}
 		}
-		Serial.printf("\n got http header: code=%s location=%s", header.code, header.location.c_str());
+		Serial.printf("\n got http header: code=%s location=%s", header.code.c_str(), header.location.c_str());
 	}
-	String bus_auth(void) { //ZZ
-		String url = String("http://") + myurl.host + ":" + myurl.sport + myurl.path;
-		//String url = String("http://damoa.io:8084/testt");
-		
-		http.begin(url);
-		Serial.printf("\ntrying bus auth POST %s %s", url.c_str(), myurl.param.c_str());
-		http.addHeader("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
-		http.addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.82 Safari/537.36");
-		
-//svcCode=NA&url=&proxy=&uip=&username=&password=&id=&ip=&client_mac=&mac=&webAuthTypeCode=IMAGE&mexusCallUrl=http%3A%2F%2F192.168.182.1%2Fwww%2Fcoova.html%3Furl%3Dhttp%3A%2F%2Fcaptive.nexpector.com%2Fauth%2FwifiSucess&language=ko&deviceType=Desktop&deviceModel=NoteBook-PC
 
-		int r=http.POST(myurl.param);
-		if(r<=0) {
-			Serial.printf("\n failed. got %d(%s)", r, http.errorToString(r).c_str());
-			REBOOT
-		}
-
-		String payload = http.getString();
-		Serial.printf("\ngot %d bytes. \n%s", payload.length(), payload.c_str());
-		http.end();
-		return payload;
-	}
 	String extract_redirect_from_body(String p) { //ZZ
 		//<script>top.self.location.href='http://cpnia.com/kt_test.jsp?usermac=10521c68fb54&apmac=54aed003fa3a&url=http%3A%2F%2Fwww.msftconnecttest.com%3A80%2Fconnecttest.txt&vendor=DASAN';</script>
 		String url="";
@@ -1247,7 +1322,7 @@ public:
 		int i=0;
 		int len=p.length();
 		String current=p;
-		current.toLowerCase();
+		//current.toLowerCase();
 		Serial.printf("\nlen=%d", len);
 		while (true) {
 			current = current.substring(i);
@@ -1268,7 +1343,7 @@ public:
 			ms.Target(tb1);
 			if (ms.Match("location%.href *= *[\'\"](.*)[\'\"]")>0) {
 				String s1 = String(ms.GetCapture(tb2, 0));
-				s1.toLowerCase();
+				//s1.toLowerCase();
 				int t=s1.indexOf("=http");
 				if (t<0) {
 					url = s1;
@@ -1296,7 +1371,7 @@ public:
 		int i=0;
 		int len=p.length();
 		String current=p;
-		current.toLowerCase();
+		//current.toLowerCase();
 		Serial.printf("\nlen=%d", len);
 		while (true) {
 			current = current.substring(i);
@@ -1328,19 +1403,20 @@ public:
 		}
 		return String(url);
 	}
-	String process_bus(String p) { //ZZ
+	void process_bus(String p) { //ZZ
 		Serial.printf("\n process Public....Open ssid. searching FORM and etc\n");
-		//Serial.println(buf);
+
 		bool form = false;
 		bool func = false;
-		String url="";  // auth
+
 		String del="";
 		int k=0;
 		int i=0;
 		int len=p.length();
 		String current=p;
-		current.toLowerCase();
+
 		Serial.printf("\nlen=%d", len);
+		myurl.param="";
 		while (true) {
 			current = current.substring(i);
 			int j=current.indexOf("\n");
@@ -1358,37 +1434,36 @@ public:
 			Serial.printf("\n [%d] %s", k++, tb1);
 			
 			ms.Target(tb1);
-			if (ms.Match("function +devicecallback")>0) {
-				Serial.printf(" -> match fuction deviceCallBack");
+			if (ms.Match("function +connectWifi")>0) {
+				Serial.printf(" --> match fuction connectWifi");
 				func=true;
 			}
-			if (func && ms.Match("%s*var +url *= *[\'\"](.*)[\'\"] *;")>0) {
+			if (func && ms.Match("url *: *\"(.*)\",")>0) {
 				ms.GetCapture(tb2, 0); 
-				Serial.printf(" -> match %s", tb2);
-				post_auth_url = String(tb2);
-				Serial.printf("\n filled post_auth_url %s", tb2);
+				myurl.path = String(tb2);
+				Serial.printf(" --> match %s", tb2);
+				//Serial.printf("\n found submit_url %s %s", myurl.host.c_str(), myurl.path.c_str());
 				func = false;
 			}
 			if (ms.Match("<form .*>")>0) {
-				Serial.printf(" -> match form begin");
+				Serial.printf(" --> match form begin");
 				form=true;
 			}
 			if (form && ms.Match("<input .*name=\"(.*)\" .*value=\"(.*)\".*>")>0) {
 				ms.GetCapture(tb2, 0); 
-				Serial.printf(" -> match %s", tb2);
-				url+= del+tb2+"=";
+				Serial.printf(" --> match %s", tb2);
+				myurl.param += del+tb2+"=";
 				ms.GetCapture(tb3, 1);
-				Serial.printf(" -> match %s", tb3);
+				Serial.printf(" --> match %s", tb3);
 				String s3 = String(tb3);
-				s3.toLowerCase();
 				if (s3.startsWith("http"))
 					for (int i=0;i<strlen(tb3);i++) {
-						if (tb3[i]==':') url +=String("%3a"); else
-						if (tb3[i]=='/') url +=String("%2f"); else
-						if (tb3[i]=='?') url +=String("%3f"); else
-						url +=String(tb3[i]);
+						if (tb3[i]==':') myurl.param +=String("%3a"); else
+						if (tb3[i]=='/') myurl.param +=String("%2f"); else
+						if (tb3[i]=='?') myurl.param +=String("%3f"); else
+						myurl.param +=String(tb3[i]);
 					}
-				else url+= s3;
+				else myurl.param+= s3;
 				del="&";
 			}
 			if (form && ms.Match("</form>")>0) {
@@ -1396,7 +1471,6 @@ public:
 			}
 			delay(0);
 		}
-		return url;
 	}
 
 	String process_raspAP(String p) { //ZZ
@@ -1437,7 +1511,7 @@ public:
 				ms.GetCapture(tb3, 1);
 				Serial.printf(" -> match %s", tb3);
 				String t1 = String(tb3);
-				t1.toLowerCase();
+				//t1.toLowerCase();
 				if (t1.startsWith("http"))
 					for (int i=0;i<strlen(tb3);i++) {
 						if (tb3[i]==':') url +=String("%3a"); else
@@ -1455,101 +1529,140 @@ public:
 
 	
 	String post_auth_url;
-	
+
+//#define TEST
 	void go_captive() { //ZZ
-		String url="http://www.msftconnecttest.com/connecttest.txt";
-		//String url="http://damoa.io/a.html";
+#ifdef TEST
+		myurl.set("http://damoa.io/captive/1");
+#else
+		myurl.set("http://www.msftconnecttest.com/connecttest.txt");
+#endif
+
+		//String myurl.url="http://damoa.io/a.html";
 		String param;
 		
 		String page;
-		//bool got_captive=false;
-		bool got_captive=false;
-		String stage = "";
-		Serial.printf("\n captive stage1, fetching %s", url.c_str());
-		for (int i=0; i<16; i++) {
-			
-			page=get(url);
-			Serial.printf(" ... got %d bytes.", page.length());
+		struct _flag {
+			bool got_redirect;
+			bool got_submit;
+			bool got_auth;
+			bool got_finish;
+		} flag = {false, false, false,false};
+
+		Serial.printf("\n captive stage1");
+		for (int i=0; i<10; i++) {
+			Serial.printf("\ni=%d, flag.got_{redirect,submit,auth,finish}=%d,%d,%d,%d", i, flag.got_redirect, flag.got_submit, flag.got_auth, flag.got_finish);
+			myurl.print();
+			if (flag.got_submit || flag.got_auth) page=post(); // from last parsing stage
+			else page=get();
+			Serial.printf(" from get() got %d bytes.", page.length());
+			//Serial.print(page);
 			int j=page.indexOf("\r\n\r\n");
 			if (j<0) {
-				Serial.printf(" web page has no header ?? \n%s", page);
+				Serial.printf(" web page has no header ?? \n%s", page.c_str());
 				reboot(10);
 			}
 			//Serial.printf("\nheader:\n%s\n", page.substring(0,j).c_str());
-			parse_header(page.substring(0,j)); 
-			
-			if (header.code == "404") { 
-				Serial.printf("\n got error 404");
-				break;
-			}
-			if (stage == "get_bus_auth") {
-				String payload = bus_auth(); // POST
-				Serial.printf("\n got auth result %s", payload.c_str());
-				url = post_auth_url;
-				stage = "";
+
+			parse_header(page.substring(0,j)); // modifies header
+
+			if (header.code.startsWith("3")) { // gor redirect page
+				if (!header.location.startsWith("http")) {
+					Serial.printf("\n code=3XX with no location. Trying damoa.io/ip");
+					myurl.set("http://damoa.io/ip");
+				} else {
+					Serial.printf("\ndata-----\n%s\n-----", page.substring(j+4).c_str());
+					Serial.printf("\n redirect location=%s", header.location.c_str());
+					myurl.set(header.location);
+					flag.got_redirect = true;
+				}
 				continue;
 			}
-			if (i==0 && header.code == "200") { // tcp working ok
-				Serial.printf("\ndata-----\n%s\n-----", page.substring(j+4).c_str());
-				if (page.substring(j+4) == "Microsoft Connect Test") {
-					Serial.printf("\n got M$. tcp ready. going normal operation mode.\n");
-					return;
-				} else {
-					url = extract_redirect_from_body(page.substring(j+4));
-					Serial.printf("\n got reload url from redirection page \n    %s", url.c_str());
-					if (url.indexOf("cpnia.com")>=0) {
-						url += "&hotspot=kt";
-						url.replace("kt_test.jsp", "main/form.jsp");
-						myurl.decompose(url);
-						strcpy(myurl.path, "/main/handle.jsp");
-						myurl.refresh();
-						url = myurl.url;
-						stage = "get_bus_auth";
-						got_captive=true;
+			if (header.code == "200") {
+				Serial.printf("\ndata-----\n%s\n-----", page.substring(j+4).substring(0, 160).c_str());
+				if (page.substring(j+4).indexOf("Microsoft Connect Test")>=0 || page.substring(j+4).indexOf("Your IP Address is")>=0) {
+					if (flag.got_submit) {
+						Serial.printf("\n flag.got_submit, and got good page. tcp got ok");
+						return;
 					}
+					if (!flag.got_redirect && i<2) {
+						Serial.printf("\n !flag.got_redirect, got M$, Trying http://damoa.io/ip too.\n");
+						myurl.set("http://damoa.io/ip");
+						continue;
+					}
+					Serial.printf("\n !flag.got_redirect, but got M$ multiple times. tcp got ok.");
+					return; // tcp working ok
+				}
+				
+				if (flag.got_redirect && !flag.got_submit) {
+#ifdef TEST
+					mywifi.myssid="Public WiFi";
+#endif
+					if (mywifi.myssid == "cookieR") myurl.url=process_raspAP(page.substring(j+4)); else
+					if (mywifi.myssid.indexOf("Public")>=0) {
+						process_bus(page.substring(j+4));  // It's redirect page. return param and myurl.url 
+						myurl.param += "&language=ko&deviceType=Desktop&deviceModel=Windows";
+#ifdef TEST
+						myurl.path="/captive/3";
+#endif
+
+						Serial.printf("\n got submit url");
+					}
+					/*
+					else 
+					if (mywifi.myssid.indexOf("cpnia.com")>=0) {
+						;
+						return;
+					} else {
+						Serial.printf("\n please configure target either raspAP or bus if not ok. Or tcp might be ready. mywifi.myssid=%s", mywifi.myssid.c_str());
+						Serial.printf("\ndata-----\n%s\n-----", page.substring(j+4).c_str());
+					}
+					*/
+					
+					flag.got_submit=true;
+					Serial.printf("\n flag.got_submit, got submit_url %s", myurl.url.c_str());
 					continue;
 				}
-			}
-			
-			if (!got_captive && header.code.startsWith("3") && header.location.startsWith("http")) { // redirect 반복
-				Serial.printf("\ndata-----\n%s\n-----", page.substring(j+4).c_str());
-				Serial.printf("\n found redirect url %s", header.location.c_str());
-				url=header.location;
-				continue;
-			}
-			if (!got_captive && header.code == "200") { // captive page, AP 마다 달라지는 부분
-				got_captive=true;
-				if (mywifi.myssid == "cookieR") url=process_raspAP(page.substring(j+4)); else
-				if (mywifi.myssid.indexOf("nexpector.com")>=0) {
-					param =process_bus(page.substring(j+4));  // return param and url 
-					param += "&language=ko&deviceType=Desktop&deviceModel=NoteBook-PC";
-					myurl.decompose(url);
-					myurl.param = param;
-
-					Serial.printf("\n got auth url and param=%s %s %s %s", myurl.host, myurl.sport, myurl.path, myurl.param.c_str()); 
-					stage = "get_bus_auth";
-				} else 
-				if (mywifi.myssid.indexOf("cpnia.com")>=0) {
-					;
-					return;
-				} else {
-					Serial.printf("\n please configure target either raspAP or bus if not ok. Or tcp might be ready. mywifi.myssid=%s", mywifi.myssid.c_str());
-					Serial.printf("\ndata-----\n%s\n-----", page.substring(j+4).c_str());
+				
+				
+				if (flag.got_submit && !flag.got_auth) {
+					Serial.printf("\n flag.got_submit,!flag.got_auth  got ok", page.c_str());
+					flag.got_auth=true;
+#ifdef TEST
+					myurl.path="/captive/4";
+#else
+					myurl.host="192.168.182.1";
+					myurl.path="/www/coova.html";
+					myurl.param= "url=http%3a%2f%2fcaptive.nexpector.com%2fauth%2fwifiSucess&"+myurl.param;
+#endif
+					continue;
 				}
-					
-				Serial.printf("\n got submit_url %s", url.c_str());
-				continue;
-			}
-			if (got_captive &&header.code.startsWith("3") && header.location.startsWith("http")) {
-				Serial.printf("\ndata-----\n%s\n-----", page.substring(j+4).c_str());
-				Serial.printf("\n got post-captive redirect url %s", header.location.c_str());
-				url=header.location;
-				continue;
-			}
-			if (got_captive && header.code == "200") { // tcp working ok
-				Serial.printf("\ndata-----\n%s\n-----", page.substring(j+4).c_str());
-				Serial.printf("\n tcp ready. going normal operation mode.");
+
+				if (flag.got_auth) {
+					Serial.printf("\n flag.got_auth  got ok", page.c_str());
+					flag.got_finish=true;
+					return;
+#ifdef TEST
+					myurl.path="/ip";
+#else
+					myurl.path="/auth/wifiSucess";
+#endif
+					myurl.param="";
+					continue;
+				}
+				
+				Serial.printf("\n code=200, but unexpected web page");
 				return;
+			}
+			if (header.code == "404") {
+				Serial.printf("\n got error 404");
+				if (flag.got_redirect && !flag.got_submit) {
+					if (myurl.url.indexOf("captive.nexpector.com")>=0) {
+						myurl.url.replace("captive.nexpector.com", "192.168.182.1");
+						Serial.printf("\n trying this agein %s", myurl.url.c_str());
+					}
+				}
+				reboot(10);
 			}
 		}
 		Serial.printf("\n repeated redirection failed."); //ZZ @ redirect(){}
@@ -1570,6 +1683,7 @@ public:
 		String code;
 		int length;
 		String location;
+		String cookie;
 	} Header;
 	Header header = {"",0,""};
 /*
@@ -1684,13 +1798,17 @@ public:
 				#ifdef USE_BLUETOOTH
 				SerialBT.printf("\ninit mqtt ok");
 				#endif
+				
+				if (mywifi.myoldssid != mywifi.myssid) {
+					sprintf(tb1, "{\"user\":%d,\"new ssid\":\"%s\",\"old ssid\":\"%s\",\"rssi\":%d,\"version\":\"%s\"}", myconf.user, mywifi.myssid.c_str(), mywifi.myoldssid.c_str(), WiFi.RSSI(), VERSION);
+					publish("reconnect", tb1);
+					mywifi.myoldssid=mywifi.myssid;
+				}
+				
 			} else {
 				mywifi.netstat = "mqtt fail";
 				Serial.printf("\nmqtt client_id %s, failed with %d %s", clientId.c_str(), mqttClient.state(), status2str(mqttClient.state()));
 				Serial.printf("\n check network connection. ");
-				for (int i=0;i<2;i++) {
-					Serial.printf("\n %d. trying http://damoa.io/ip and got %s", i, mycaptive.get("http://damoa.io/ip").c_str());
-				}
 				return 0;
 			}
 		}
@@ -1709,19 +1827,21 @@ void do_tick_1sec() {
 }
 
 void do_tick_6sec() {
-	static unsigned long gpscnt=0;
+	static long gpscnt= -10;
 	if (mybme.ready) mybme.update();
 	else if(mytemphumid.ready) mytemphumid.update();
-	if (gps.charsProcessed()-gpscnt < 10) {
-		Serial.printf("\n %d GPS is not responding..", gps.charsProcessed());
-		sprintf(tb1, "{\"user\":%d,\"serial\":%lu,\"error\":\"%s\"}", myconf.user, mywifi.serial, "GPS no data");
-		Serial.println(tb1);
-		mymqtt.publish("errors", tb1);
-		return;
-	} else {
-		mygps.print(gps.charsProcessed()-gpscnt);
-		gpscnt = gps.charsProcessed();
-	}
+	if (myconf.gps==1)
+		if (gps.charsProcessed()-gpscnt < 10) {
+			Serial.printf("\n %d GPS is not responding..", gps.charsProcessed());
+			sprintf(tb1, "{\"user\":%d,\"serial\":%lu,\"error\":\"%s\"}", myconf.user, mywifi.serial, "GPS no data");
+			Serial.println(tb1);
+			mymqtt.publish("errors", tb1);
+			return;
+		} else {
+			mygps.print(gps.charsProcessed()-gpscnt);
+			gpscnt = gps.charsProcessed();
+		}
+	if (mysgp.ready) mysgp.update();
 }
 
 void do_tick_2sec() {
@@ -1770,7 +1890,7 @@ void do_tick_60sec() {
 
 	if (mybme.ready) {
 		//char f1[11][5]={"%.1f","%.0f","%f","%.0f","%.0f"};
-		for (int i=0;i<11;i++) {
+		for (int i=0;i<5;i++) {
 			sprintf(tbuf, "%f", mymedian.get(mybme.readings[i], mybme.numreadings));
 			char *p=&tbuf[strlen(tbuf)]-1;
 			while (*p=='0') {
@@ -1780,9 +1900,19 @@ void do_tick_60sec() {
 			values += comma+tbuf;
 			comma=",";
 		}
-		format += "T+H+I+++VPG";
+		format += "THVPA";
 		mybme.numreadings=0;
-	} else {
+	} else
+	if (mysgp.ready) {
+		//srawVoc srawNox defaultT defaultRh
+		//char f1[11][5]={"%.1f","%.0f","%f","%.0f","%.0f"};
+		sprintf(tbuf, "0,%f,%f", mymedian.get(mysgp.readings[0], mysgp.numreadings)/1000., mymedian.get(mysgp.readings[1], mysgp.numreadings)/1000.);
+		values += comma+String(tbuf);
+		comma=",";
+		format += "V+N";
+		mysgp.numreadings=0;
+	}
+	else {
 		if (mytemphumid.numreadings>0) {
 			sprintf(tbuf, "%.1f,%.0f", mymedian.get(mytemphumid.temp_readings, mytemphumid.numreadings),mymedian.get(mytemphumid.humid_readings, mytemphumid.numreadings));
 			//mytemphumid.numreadings=0;  wait form BME
@@ -1803,7 +1933,7 @@ void do_tick_60sec() {
 		format +="TG+++++";
 	}
 	
-	sprintf(tbuf, "{\"user\":%d,\"mac\":\"%s\",\"rssi\":%d,\"topic\":\"%s\",\"device\":\"%s\",\"version\":\"%s\",\"serial\":%lu,\"attribute\":\"%s\",\"data\":\"%s\"}", myconf.user, mywifi.macaddr, WiFi.RSSI(), myconf.topic, myconf.device, VERSION, mywifi.serial++,format.c_str(),values.c_str());
+	sprintf(tbuf, "{\"user\":%d,\"mac\":\"%s\",\"ssid\":\"%s\",\"rssi\":%d,\"topic\":\"%s\",\"device\":\"%s\",\"version\":\"%s\",\"serial\":%lu,\"attribute\":\"%s\",\"data\":\"%s\"}", myconf.user, mywifi.macaddr, mywifi.myssid.c_str(), WiFi.RSSI(), myconf.topic, myconf.device, VERSION, mywifi.serial++,format.c_str(),values.c_str());
 	if (strlen(tbuf)>MQTT_MAX_PACKET_SIZE) {
 		Serial.printf("\n pubsub buffer overflow");
 	}
@@ -1820,7 +1950,7 @@ void do_tick_60sec() {
 		if (!myconf.gps && got_co2 < 10) m += m==""?String(""):String(" / ") + "CO2 sensor is not responding / ";
 	}
 	if (m !="") {
-		sprintf(tb1, "{\"user\":%d,\"reboot reason\":\"%s\"", myconf.user, m.c_str());
+		sprintf(tb1, "{\"user\":%d,\"reboot reason\":\"%s\"}", myconf.user, m.c_str());
 		Serial.println(tb1);
 		mymqtt.publish("reboot", tb1);
 		reboot(5);
@@ -1883,15 +2013,19 @@ void setup() {
 	delay(1);
 	Serial2.begin(9600, SERIAL_8N1, 16, 17); //16,17 Serial CO2 and GPS
 	delay(1);
-	Serial.printf("\n will detect CO2 or GPS. CO2 assumed");
+	if (myconf.gps) Serial.printf("\n Using GPS");
+	else Serial.printf("\n Using CO2");
 
 #ifdef OLED
 	Wire.begin(23, 22); // oled
 #else
-	Wire.begin(dataP, clockP);  //19,18  I2C
-	mygyro.begin(); //I2C
-	mybme.begin(); //I2C
-	delay(1);
+	{
+		Wire.begin(dataP, clockP);  //19,18  I2C
+		mygyro.begin(); //I2C
+		mybme.begin(); //I2C
+		mysgp.begin();
+		delay(1);
+	}
 #endif
 
 	mytemphumid.begin(); //I2C
@@ -1914,6 +2048,7 @@ void setup() {
 	mymqtt.begin();
 	mqttClient.setCallback(callback);
 	sprintf(tb1, "{\"user\":%d,\"ssid\":\"%s\",\"rssi\":%d,\"version\":\"%s\"}", myconf.user, mywifi.myssid.c_str(), WiFi.RSSI(), VERSION);
+	mywifi.myoldssid=mywifi.myssid;
 	mymqtt.publish("start", tb1);
 	
 	xTaskCreatePinnedToCore(
@@ -1947,19 +2082,6 @@ void main_loop(void *param) { Serial.printf("\n# main_loop task running on core 
 	static unsigned mark3=0;
 	static unsigned mark4=0;
 	
-	if (mark3<millis()) {
-		static bool first=1;
-		if (first) {
-			first=0;
-			
-		}
-		mark3 = millis()+6000;
-		do_tick_6sec();
-	}
-	if (mark2<millis()) {
-		mark2 = millis()+1000;
-		do_tick_1sec();
-	}
 	if (mark<millis()) {
 		mark = millis()+2000;
 		do_tick_2sec();
@@ -1978,10 +2100,26 @@ void main_loop(void *param) { Serial.printf("\n# main_loop task running on core 
 }}
 
 void update_loop(void *param) {	Serial.printf("\n# update_task running on core %d", xPortGetCoreID()); 	while(1) { vTaskDelay(1);
+	static unsigned mark2=0;
+	static unsigned mark3=0;
+	
 	myconsole.update();
 	myled.update();
 	mycaptive.update();
 	mydust.update();
+	if (mark3<millis()) {
+		static bool first=1;
+		if (first) {
+			first=0;
+			
+		}
+		mark3 = millis()+6000;
+		do_tick_6sec();
+	}
+	if (mark2<millis()) {
+		mark2 = millis()+1000;
+		do_tick_1sec();
+	}
 	int c;
 	static bool first = true;
 	if((c=Serial2.available())) {
@@ -1993,13 +2131,13 @@ void update_loop(void *param) {	Serial.printf("\n# update_task running on core %
 			for (int i=0;i<c-1; i++) {
 				if (tb1[i]==0xff && tb1[i+1]==0x86) {
 					Serial.printf(" ... Detect CO2 data. Confirmed.");
-					myconf.gps = false;
+					myconf.gps = 0;
 					first = false;
 					break;
 				}
 				if (tb1[i]=='$' && tb1[i+1]=='G') {
 					Serial.printf(" ... Detect GPS data. Confirmed.");
-					myconf.gps = true;
+					myconf.gps = 1;
 					first = false;
 					break;
 				}
